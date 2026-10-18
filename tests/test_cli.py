@@ -1,0 +1,125 @@
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+import pytest
+
+from conftest import event
+
+
+def cli_env():
+    env = dict(os.environ)
+    for name in ("HOLMES_API_URL", "HOLMES_API_TOKEN", "HOLMES_MODEL", "HOLMES_TIMEOUT"):
+        env.pop(name, None)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+    return env
+
+
+def invoke(args, directory, env=None):
+    return subprocess.run([sys.executable, "-m", "holmes_benchmark", *args],
+                          cwd=directory, env=env or cli_env(), capture_output=True,
+                          text=True, timeout=10)
+
+
+def test_cli_exports_json_and_excel_and_keeps_credentials_out(sse_server, tmp_path):
+    secret = "example-secret-credential"
+    with sse_server({"A": (200, "text/event-stream", [
+        (0, event("ai_answer_end", {"analysis": f"Echo {secret}", "metadata": {"usage": {"total_tokens": 5}}})),
+    ])}, barrier=2) as (url, requests):
+        env = cli_env()
+        env.update(HOLMES_API_URL=url, HOLMES_API_TOKEN=secret)
+        process = invoke(["-q", "A", "-p", "2", "--export-to-excel"], tmp_path, env)
+    assert process.returncode == 0, process.stderr
+    assert "Success: 2/2" in process.stdout
+    assert "results.json" in process.stdout and "report.xlsx" in process.stdout
+    saved = list(tmp_path.glob("results/*/results.json"))
+    assert len(saved) == 1
+    report = json.loads(saved[0].read_text())
+    assert report["requests"][0]["answer"] == "Echo [REDACTED]"
+    assert saved[0].with_name("report.xlsx").exists()
+    assert secret not in process.stdout + process.stderr + saved[0].read_text()
+    assert len(requests) == 2
+
+
+def test_cli_failure_exit_and_unique_runs(sse_server, tmp_path):
+    with sse_server({"bad": (503, "text/plain", [(0, b"unavailable")])}) as (url, requests):
+        for _ in range(2):
+            process = invoke(["-q", "bad", "--api-url", url], tmp_path)
+            assert process.returncode == 1
+            assert "http_error" in process.stdout
+            assert "Traceback" not in process.stderr
+    saved = list(tmp_path.glob("results/*/results.json"))
+    assert len(saved) == 2 and len(requests) == 2
+    assert not list(tmp_path.glob("results/*/*.xlsx"))
+
+
+def test_invalid_configuration_and_unwritable_output_send_nothing(sse_server, tmp_path):
+    with sse_server() as (url, requests):
+        process = invoke(["-q", "A", "-p", "0", "--api-url", url], tmp_path)
+        assert process.returncode == 2
+        assert not (tmp_path / "results").exists()
+        (tmp_path / "results").write_text("a file blocks the output directory")
+        process = invoke(["-q", "A", "--api-url", url], tmp_path)
+        assert process.returncode == 1
+        assert "output directory" in process.stderr.lower()
+        assert "Traceback" not in process.stderr
+        assert requests == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX SIGINT subprocess integration")
+def test_sigint_saves_completed_and_cancelled_requests(sse_server, tmp_path):
+    with sse_server({"slow": (200, "text/event-stream", [
+        (0, event("ai_message", {"content": "working"})),
+        (5, event("ai_answer_end", {"analysis": "late"})),
+    ])}) as (url, requests):
+        process = subprocess.Popen([
+            sys.executable, "-u", "-m", "holmes_benchmark", "--api-url", url,
+            "-q", "fast", "-q", "slow", "-p", "2", "--export-to-excel",
+        ], cwd=tmp_path, env=cli_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 5
+            while len(requests) < 2 and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert len(requests) == 2, process.communicate(timeout=2)
+            time.sleep(0.1)
+            process.send_signal(signal.SIGINT)
+            stdout, stderr = process.communicate(timeout=5)
+            assert process.returncode == 130, stderr
+            assert "Interrupted" in stdout
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+    path = next(tmp_path.glob("results/*/results.json"))
+    report = json.loads(path.read_text())
+    assert report["interrupted"]
+    assert [r["outcome"] for r in report["requests"]] == ["success", "cancelled"]
+    assert report["requests"][1]["raw_events"][0]["data"]["content"] == "working"
+    assert path.with_name("report.xlsx").exists()
+
+
+def test_excel_failure_preserves_json(sse_server, tmp_path, monkeypatch, capsys):
+    from holmes_benchmark import cli
+
+    def fail_export(*args):
+        raise OSError("disk problem")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "write_excel", fail_export)
+    with sse_server() as (url, _):
+        code = cli.main(["--api-url", url, "-q", "A", "--export-to-excel"])
+    assert code == 1
+    assert len(list(tmp_path.glob("results/*/results.json"))) == 1
+    assert "disk problem" in capsys.readouterr().err
+
+
+def test_help_is_available_without_configuration(tmp_path):
+    result = invoke(["--help"], tmp_path)
+    assert result.returncode == 0
+    assert "--export-to-excel" in result.stdout
+    assert "HOLMES_API_URL" in result.stdout
+    assert not list(tmp_path.iterdir())
