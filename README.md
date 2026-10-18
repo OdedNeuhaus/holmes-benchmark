@@ -168,12 +168,18 @@ server/model caches, rate limits, and available tools can affect comparisons.
 Each run creates a unique directory relative to your current working directory:
 
 ```text
-results/20261018T120000000000Z-a1b2c3d4/
+results/20261018T150000000000+0300-a1b2c3d4/
 ├── results.json
 └── report.xlsx       # With --export-to-excel
 ```
 
-The schema-versioned JSON includes safe settings, UTC timestamps, the summary,
+All benchmark-generated timestamps use **fixed UTC+3**, independent of the host
+timezone or daylight saving time. JSON timestamps include `+03:00`, folder names
+include `+0300`, and terminal logs and Excel label the timezone explicitly.
+Durations still use a monotonic clock. Timestamps inside original model responses
+and metadata are preserved as returned by the server.
+
+The schema-versioned JSON includes safe settings, UTC+3 timestamps, the summary,
 normalized request records, and raw SSE data events with receive times. Unknown
 events are retained. Heartbeat comments are not data events. Final answers and
 HTTP error bodies are preserved; authentication headers are never saved and the
@@ -185,9 +191,10 @@ The Excel workbook contains:
 - **Summary:** clearly separated performance, run settings, and measurement notes.
 - **Results:** filterable rows with outcomes, timings, tool counts,
   last reported tokens, and errors.
-- **Answers:** questions, final answers, and errors. Long text continues in
-  short, numbered reading sections with wrapped text and rows sized to fit;
-  full details are also available in JSON. Partial assistant
+- **Answers:** each question, final answer, and error stays together in one cell,
+  marked `Complete`. Only text exceeding Excel's storage limits needs additional
+  rows, explicitly labeled `(continued)` with part numbers such as `1/2` and `2/2`.
+  Full details are also available in JSON. Partial assistant
   text from interrupted requests remains in the JSON events.
 
 Sheets use Aptos fonts, navy/teal headers, alternating row shading, highlighted
@@ -198,6 +205,12 @@ or structured Excel table objects. Response text is written as
 literal strings rather than spreadsheet formulas. Excel-incompatible characters
 are removed from the workbook only. JSON retains them. Excel generation happens
 after JSON saving; an export failure leaves the JSON available.
+
+Excel limits each cell to 32,767 characters (counted conservatively as UTF-16
+units) and 253 line feeds. It also limits row height, so a very long answer may
+not fit visibly in its row even though the entire text is stored in the cell.
+Select the cell and expand the formula bar to read it, or open the JSON.
+See [Microsoft's Excel limits](https://support.microsoft.com/en-us/excel/excel-specifications-and-limits).
 
 Press **Ctrl-C once** during a run to cancel outstanding requests and save
 completed and partial results, including Excel if requested. A second interrupt

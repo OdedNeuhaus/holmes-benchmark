@@ -2,7 +2,6 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import json
 import math
 from time import perf_counter
@@ -12,10 +11,7 @@ import httpx
 
 from .config import Config
 from .sse import Event, iter_events, iter_lines
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+from .timestamps import timestamp_now
 
 
 @dataclass
@@ -142,7 +138,7 @@ def _consume_event(result: RequestResult, event: Event, elapsed: float) -> bool:
     result.raw_events.append({
         "event": event.event, "id": event.id, "data": payload,
         "raw_data": event.raw_data, "raw_lines": event.raw_lines,
-        "complete": event.complete, "received_at": utc_now(), "elapsed_seconds": elapsed,
+        "complete": event.complete, "received_at": timestamp_now(), "elapsed_seconds": elapsed,
     })
     if not event.complete:
         result.outcome, result.error = "incomplete", "Stream ended inside an SSE event"
@@ -192,7 +188,7 @@ async def _request(client: httpx.AsyncClient, config: Config,
     try:
         await barrier.wait()
         started = perf_counter()
-        result.started_at = utc_now()
+        result.started_at = timestamp_now()
         result.outcome, result.error = "incomplete", "Stream ended without ai_answer_end"
         _notify(on_progress, ProgressUpdate(result.request_id, "started", 0))
         body: dict[str, Any] = {"ask": result.question, "stream": True}
@@ -228,7 +224,7 @@ async def _request(client: httpx.AsyncClient, config: Config,
         # An unexpected problem in one response must not discard its siblings.
         result.outcome, result.error = "client_error", f"{type(exc).__name__}: {exc}"
     finally:
-        result.finished_at = utc_now()
+        result.finished_at = timestamp_now()
         if started is not None:
             result.elapsed_seconds = perf_counter() - started
         _notify(on_progress, ProgressUpdate(result.request_id, "finished", result.elapsed_seconds or 0,
@@ -244,7 +240,7 @@ async def run_benchmark(config: Config, on_progress: ProgressObserver | None = N
     limits = httpx.Limits(max_connections=config.parallel, max_keepalive_connections=config.parallel)
     async with httpx.AsyncClient(headers=headers, limits=limits, timeout=None,
                                 follow_redirects=False) as client:
-        started_at, started = utc_now(), perf_counter()
+        started_at, started = timestamp_now(), perf_counter()
         barrier = asyncio.Barrier(config.parallel)
         tasks = [asyncio.create_task(_request(client, config, r, barrier, on_progress)) for r in results]
         group = asyncio.gather(*tasks)
@@ -257,5 +253,5 @@ async def run_benchmark(config: Config, on_progress: ProgressObserver | None = N
                 task.cancel()
             await group
         duration = perf_counter() - started
-        finished_at = utc_now()
+        finished_at = timestamp_now()
     return Batch(results, started_at, finished_at, duration, interrupted)

@@ -5,19 +5,21 @@ from pathlib import Path
 import re
 import unicodedata
 
+from .timestamps import format_timestamp, TIMEZONE_LABEL
 
 INVALID_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 
 
 def _chunks(value: str):
     text = INVALID_XML.sub("", value)
-    start, units = 0, 0
+    start, units, line_feeds = 0, 0, 0
     for index, char in enumerate(text):
         size = 2 if ord(char) > 0xFFFF else 1
-        if units + size > 32000:
+        if units + size > 32767 or (char == "\n" and line_feeds == 253):
             yield text[start:index]
-            start, units = index, 0
+            start, units, line_feeds = index, 0, 0
         units += size
+        line_feeds += char == "\n"
     yield text[start:]
 
 
@@ -27,25 +29,6 @@ def _char_width(char: str) -> int:
     if unicodedata.combining(char):
         return 0
     return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
-
-
-def _reading_chunks(value: str, width: int = 82, max_lines: int = 12):
-    """Split at a readable row height, preserving every sanitized character."""
-    for text in _chunks(value):
-        start, lines, column = 0, 1, 0
-        for index, char in enumerate(text):
-            size = _char_width(char)
-            wraps = char in "\r\n" or column + size > width
-            if wraps and lines >= max_lines and index > start:
-                yield text[start:index]
-                start, lines, column = index, 1, 0
-                wraps = char in "\r\n"
-            if wraps:
-                lines += 1
-                column = 0
-            if char not in "\r\n":
-                column += size
-        yield text[start:]
 
 
 def _line_count(value, width: int) -> int:
@@ -115,14 +98,14 @@ def write_excel(report: dict, directory: Path) -> Path:
         for row in sheet.iter_rows(min_row=2):
             lines = max(_line_count(cell.value or "", max(5, int(widths[cell.column - 1] * 0.82)))
                         for cell in row)
-            sheet.row_dimensions[row[0].row].height = min(300, max(32, lines * 16 + 16))
+            sheet.row_dimensions[row[0].row].height = min(400, max(32, lines * 16 + 16))
         if filters:
             # A worksheet filter is sufficient; do not also define an Excel table.
             sheet.auto_filter.ref = sheet.dimensions
 
     stats = report["summary"]
     append(summary, ["HolmesGPT Benchmarking", "RUN REPORT"])
-    append(summary, ["Run started (UTC)", report["started_at"]])
+    append(summary, [f"Run started ({TIMEZONE_LABEL})", format_timestamp(report["started_at"])])
     sections = []
 
     def section(label):
@@ -152,14 +135,14 @@ def write_excel(report: dict, directory: Path) -> Path:
         ("Requested model", report["settings"]["requested_model"] or "Server default"),
         ("Parallel requests", report["settings"]["parallel"]),
         ("Request deadline (s)", report["settings"]["timeout_seconds"]),
-        ("Finished (UTC)", report["finished_at"]),
+        (f"Finished ({TIMEZONE_LABEL})", format_timestamp(report["finished_at"])),
         ("Interrupted", report["interrupted"]),
     ]:
         append(summary, [label, value])
     section("READING THIS REPORT")
     for name, note in report["measurement_notes"].items():
         append(summary, [name.replace("_", " ").title(), note])
-    append(summary, ["Long text", "Full questions, answers, and errors are in Answers, split across numbered reading sections. JSON preserves the original response."])
+    append(summary, ["Long text", "Each answer stays in one cell unless Excel storage limits require labeled continuation rows. Expand the formula bar to read text beyond the row height. JSON preserves the original response."])
     format_sheet(summary, [44, 100])
     summary["A1"].font = Font(name="Aptos Display", size=19, bold=True, color="FFFFFF")
     summary["B1"].font = Font(name="Aptos", size=11, bold=True, color="5EEAD4")
@@ -199,15 +182,18 @@ def write_excel(report: dict, directory: Path) -> Path:
         for kind, text in (("Question", result["question"]), ("Answer", result["answer"]), ("Error", result["error"])):
             if text is None:
                 continue
-            for part, chunk in enumerate(_reading_chunks(text), 1):
-                row = append(answers, [result["request_id"], kind, part, chunk])
+            chunks = list(_chunks(text))
+            for part, chunk in enumerate(chunks, 1):
+                label = kind if part == 1 else f"{kind} (continued)"
+                part_label = "Complete" if len(chunks) == 1 else f"{part}/{len(chunks)}"
+                row = append(answers, [result["request_id"], label, part_label, chunk])
                 for cell in answers[row]:
                     cell.alignment = Alignment(vertical="top", wrap_text=True, indent=1)
                     if kind in ("Question", "Error"):
                         cell.fill = PatternFill("solid", fgColor="E0F2FE" if kind == "Question" else "FFE4E6")
                         cell.font = Font(name="Aptos", size=11, bold=True, color="0F172A")
     format_sheet(results, [9, 44, 23, 14, 17, 14, 11, 11, 15, 15, 15, 24, 13, 44], filters=True)
-    format_sheet(answers, [10, 14, 10, 100], filters=True)
+    format_sheet(answers, [10, 25, 14, 100], filters=True)
     for sheet, color in ((summary, "0F766E"), (results, "0284C7"), (answers, "7C3AED")):
         sheet.sheet_properties.tabColor = color
 

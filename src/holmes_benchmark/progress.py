@@ -3,7 +3,6 @@
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
 from time import perf_counter
 
 from rich.console import Console, Group
@@ -16,6 +15,7 @@ from rich.text import Text
 from .config import Config
 from .report import redact, terminal_text
 from .runner import ProgressUpdate
+from .timestamps import now as wall_now, TIMEZONE_LABEL
 
 
 @dataclass
@@ -87,7 +87,7 @@ class ProgressDisplay:
             row.tools.clear()
             message = f"{row.outcome} in {row.elapsed:.2f}s"
         if message is not None or row.status != previous:
-            stamp = datetime.now().strftime("%H:%M:%S")
+            stamp = wall_now().strftime("%H:%M:%S") + " " + TIMEZONE_LABEL
             self.pending.append(f"[{stamp}] #{event.request_id}  {message or row.status}")
 
     def render(self):

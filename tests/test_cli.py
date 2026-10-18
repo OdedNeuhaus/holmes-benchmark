@@ -153,6 +153,40 @@ def test_default_output_stays_brief(sse_server, tmp_path):
     assert "Benchmark results" not in process.stdout
 
 
+def test_generated_timestamps_use_utc_plus_three_everywhere(sse_server, tmp_path):
+    from datetime import datetime, timedelta
+    import re
+    from openpyxl import load_workbook
+
+    env = cli_env()
+    env["TZ"] = "UTC"  # Output must not inherit the host's timezone.
+    with sse_server() as (url, _):
+        process = invoke(["--api-url", url, "-q", "A", "--export-to-excel"], tmp_path, env)
+    assert process.returncode == 0, process.stderr
+    path = next(tmp_path.glob("results/*/results.json"))
+    report = json.loads(path.read_text())
+    timestamps = [report["started_at"], report["finished_at"]]
+    for request in report["requests"]:
+        timestamps.extend([request["started_at"], request["finished_at"]])
+        timestamps.extend(event["received_at"] for event in request["raw_events"])
+    assert all(datetime.fromisoformat(value).utcoffset() == timedelta(hours=3) for value in timestamps)
+    assert report["settings"]["timezone"] == "UTC+3"
+    stamp = path.parent.name.rsplit("-", 1)[0]
+    assert stamp.endswith("+0300")
+    directory_time = datetime.strptime(stamp, "%Y%m%dT%H%M%S%f%z")
+    assert abs((datetime.fromisoformat(report["started_at"]) - directory_time).total_seconds()) < 10
+    logs = re.findall(r"\[(\d\d:\d\d:\d\d) UTC\+3\]", process.stderr)
+    assert logs
+    start = datetime.fromisoformat(report["requests"][0]["started_at"])
+    logged = datetime.combine(start.date(), datetime.strptime(logs[0], "%H:%M:%S").time(), start.tzinfo)
+    assert abs((logged - start).total_seconds()) < 2
+    book = load_workbook(path.with_name("report.xlsx"))
+    metrics = {row[0].value: row[1].value for row in book["Summary"]}
+    assert metrics["Run started (UTC+3)"] == report["started_at"]
+    assert metrics["Finished (UTC+3)"] == report["finished_at"]
+    book.close()
+
+
 def test_live_terminal_updates_tools_and_restores_cursor(sse_server, tmp_path, monkeypatch):
     from io import StringIO
     from rich.console import Console

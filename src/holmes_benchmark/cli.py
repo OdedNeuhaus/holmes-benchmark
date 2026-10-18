@@ -2,7 +2,6 @@
 
 import asyncio
 from contextlib import suppress
-from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from tempfile import TemporaryFile
@@ -16,10 +15,11 @@ from .config import parse_config
 from .report import build_report, print_summary, redact, terminal_text, write_excel, write_json
 from .runner import run_benchmark
 from .progress import ProgressDisplay
+from .timestamps import now, TIMEZONE_LABEL
 
 
 def _output_directory() -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    stamp = now().strftime("%Y%m%dT%H%M%S%f%z")
     directory = Path("results") / f"{stamp}-{uuid4().hex[:8]}"
     directory.mkdir(parents=True, mode=0o700)
     # Actually write a byte: permissions checks alone can be misleading on mounts.
@@ -63,7 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     ))
     console.print()
     print(f"Running {config.parallel} concurrent request(s), "
-          f"{len(config.questions)} question(s), {config.timeout:g}s deadline each…", flush=True)
+          f"{len(config.questions)} question(s), {config.timeout:g}s deadline each… "
+          f"Times: {TIMEZONE_LABEL}", flush=True)
     try:
         batch = asyncio.run(_run(config))
         report = build_report(config, batch)

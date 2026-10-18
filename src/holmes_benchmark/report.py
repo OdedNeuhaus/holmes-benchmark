@@ -12,6 +12,7 @@ from urllib.parse import quote
 from .config import Config
 from .excel import write_excel  # Public export alongside write_json.
 from .runner import Batch, KNOWN_EVENTS, RequestResult
+from .timestamps import format_timestamp, TIMEZONE_LABEL
 
 
 def redact(value: Any, token: str | None) -> Any:
@@ -36,6 +37,8 @@ def redact(value: Any, token: str | None) -> Any:
 
 def _safe_request(result: RequestResult, token: str | None) -> dict:
     record = asdict(result)
+    for key in ("started_at", "finished_at"):
+        record[key] = format_timestamp(record[key])
     # Only externally sourced content is secret-bearing. Application keys,
     # outcomes, IDs, timings, and counters must retain their schema semantics.
     for key in ("question", "requested_model", "answer", "error", "response_body",
@@ -44,6 +47,8 @@ def _safe_request(result: RequestResult, token: str | None) -> dict:
     record["tools"] = [{key: redact(value, token) for key, value in tool.items()}
                        for tool in record["tools"]]
     for event in record["raw_events"]:
+        if "received_at" in event:
+            event["received_at"] = format_timestamp(event["received_at"])
         for key in ("id", "data", "raw_data", "raw_lines"):
             if key in event:
                 event[key] = redact(event[key], token)
@@ -62,10 +67,10 @@ def build_report(config: Config, batch: Batch) -> dict:
                      p95=timings[math.ceil(0.95 * count) - 1], max=timings[-1])
     report = {
         "schema_version": 1,
-        "started_at": batch.started_at,
-        "finished_at": batch.finished_at,
+        "started_at": format_timestamp(batch.started_at),
+        "finished_at": format_timestamp(batch.finished_at),
         "interrupted": batch.interrupted,
-        "settings": {"api_url": redact(config.api_url, config.token),
+        "settings": {"timezone": TIMEZONE_LABEL, "api_url": redact(config.api_url, config.token),
                      "questions": redact(list(config.questions), config.token),
                      "parallel": config.parallel, "timeout_seconds": config.timeout,
                      "requested_model": redact(config.model, config.token), "stream": True,

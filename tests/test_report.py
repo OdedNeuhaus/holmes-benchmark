@@ -118,7 +118,7 @@ def test_excel_simple_filters_literal_text_and_long_answer_chunks(tmp_path):
     assert results.cell(3, headers["Last total tokens"]).value == "N/A"
     assert not results.conditional_formatting
     chunks = [row[3].value for row in answers.iter_rows(min_row=2)
-              if row[0].value == 1 and row[1].value == "Answer"]
+              if row[0].value == 1 and row[1].value.startswith("Answer")]
     assert len(chunks) > 1
     assert "".join(chunks) == "=1+1" + "שלום😀" * 12000
     assert all(len(s.encode("utf-16-le")) // 2 <= 32767 for s in chunks)
@@ -150,7 +150,7 @@ def test_excel_all_failed_still_writes_usable_report(tmp_path):
     book.close()
 
 
-def test_excel_long_answers_use_readable_rows_and_preserve_newlines(tmp_path):
+def test_excel_keeps_one_answer_in_one_cell_and_preserves_newlines(tmp_path):
     from holmes_benchmark.report import build_report, write_excel
 
     batch = sample_batch()
@@ -162,17 +162,37 @@ def test_excel_long_answers_use_readable_rows_and_preserve_newlines(tmp_path):
     sheet = book["Answers"]
     records = [row for row in sheet.iter_rows(min_row=2)
                if row[0].value == 1 and row[1].value == "Answer"]
-    assert len(records) > 5  # Reading chunks, not a single oversized hidden cell.
+    assert len(records) == 1
     assert "".join(row[3].value or "" for row in records) == answer
-    assert [row[2].value for row in records] == list(range(1, len(records) + 1))
+    assert records[0][2].value == "Complete"
     for row in records:
         cell = row[3]
         assert cell.alignment.wrap_text
-        assert cell.value.count("\n") <= 12
-        assert len(cell.value) <= 1200
-        assert 30 <= sheet.row_dimensions[cell.row].height <= 300
+        assert 30 <= sheet.row_dimensions[cell.row].height <= 409
     assert len(book["Results"]["B2"].value) < 250
     assert "Answers" in book["Results"]["B2"].value
+    book.close()
+
+
+@pytest.mark.parametrize("answer, count", [("a" * 32767, 1), ("a" * 32768, 2), ("line\n" * 254, 2)],
+                         ids=["at-character-limit", "over-character-limit", "over-newline-limit"])
+def test_excel_splits_only_at_storage_limits_and_labels_continuations(tmp_path, answer, count):
+    from holmes_benchmark.report import build_report, write_excel
+
+    batch = sample_batch()
+    batch.requests = batch.requests[:1]
+    batch.requests[0].answer = answer
+    write_excel(build_report(Config("http://host/api/chat", ("A",)), batch), tmp_path)
+    book = load_workbook(tmp_path / "report.xlsx")
+    rows = [row for row in book["Answers"].iter_rows(min_row=2)
+            if row[1].value.startswith("Answer")]
+    assert len(rows) == count
+    assert "".join(row[3].value for row in rows) == answer
+    assert all(len(row[3].value.encode("utf-16-le")) // 2 <= 32767 for row in rows)
+    assert all(row[3].value.count("\n") <= 253 for row in rows)
+    if count > 1:
+        assert rows[1][1].value == "Answer (continued)"
+        assert [row[2].value for row in rows] == ["1/2", "2/2"]
     book.close()
 
 
