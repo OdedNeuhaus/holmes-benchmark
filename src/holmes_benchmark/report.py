@@ -69,7 +69,7 @@ def build_report(config: Config, batch: Batch) -> dict:
                      "questions": redact(list(config.questions), config.token),
                      "parallel": config.parallel, "timeout_seconds": config.timeout,
                      "requested_model": redact(config.model, config.token), "stream": True,
-                     "export_to_excel": config.export_to_excel},
+                     "export_to_excel": config.export_to_excel, "progress_enabled": not config.no_progress},
         "measurement_notes": {
             "first_text": "First nonempty ai_message.content, or final analysis; not first-token latency.",
             "completion": "Client-observed time through ai_answer_end; successful requests only.",

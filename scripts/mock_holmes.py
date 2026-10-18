@@ -27,7 +27,14 @@ class MockHolmes(BaseHTTPRequestHandler):
         try:
             time.sleep(0.2)
             self.event("ai_message", {"content": "Checking the mock cluster..."})
+            self.event("start_tool_calling", {
+                "id": "mock-pods", "tool_name": "kubernetes.list_pods",
+            })
             time.sleep(0.8)
+            self.event("tool_calling_result", {
+                "tool_call_id": "mock-pods", "name": "kubernetes.list_pods",
+                "result": {"status": "success", "data": "All mock pods are healthy."},
+            })
             self.event("ai_answer_end", {
                 "analysis": "Mock response: all pods and nodes are healthy.",
                 "metadata": {"usage": {

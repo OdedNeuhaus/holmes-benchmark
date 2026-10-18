@@ -22,6 +22,8 @@ def test_standalone_mock_with_actual_cli(tmp_path):
                                 cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stderr
         assert "Success: 5/5" in result.stdout
+        assert "Tool started: kubernetes.list_pods" in result.stderr
+        assert "Tool finished: kubernetes.list_pods" in result.stderr
         path = next(tmp_path.glob("results/*/results.json"))
         report = json.loads(path.read_text())
         assert [r["question"] for r in report["requests"]] == [
@@ -29,6 +31,7 @@ def test_standalone_mock_with_actual_cli(tmp_path):
         ]
         assert all(r["answer"] == "Mock response: all pods and nodes are healthy."
                    for r in report["requests"])
+        assert all(r["tool_call_count"] == 1 for r in report["requests"])
         assert all(r["completion_seconds"] - r["first_text_seconds"] >= 0.7
                    for r in report["requests"])
         assert report["summary"]["batch_duration_seconds"] < 4

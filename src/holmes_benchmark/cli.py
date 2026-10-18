@@ -1,6 +1,7 @@
 """Console entry point and output lifecycle."""
 
 import asyncio
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -10,6 +11,7 @@ from uuid import uuid4
 from .config import parse_config
 from .report import build_report, print_summary, redact, terminal_text, write_excel, write_json
 from .runner import run_benchmark
+from .progress import ProgressDisplay
 
 
 def _output_directory() -> Path:
@@ -21,6 +23,19 @@ def _output_directory() -> Path:
         probe.write(b"\0")
         probe.flush()
     return directory
+
+
+async def _run(config):
+    if config.no_progress:
+        return await run_benchmark(config)
+    with ProgressDisplay(config) as display:
+        refresh = asyncio.create_task(display.refresh_loop())
+        try:
+            return await run_benchmark(config, on_progress=display.update)
+        finally:
+            refresh.cancel()
+            with suppress(asyncio.CancelledError):
+                await refresh
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,13 +52,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Running {config.parallel} concurrent request(s), "
           f"{len(config.questions)} question(s), {config.timeout:g}s deadline each…", flush=True)
     try:
-        batch = asyncio.run(run_benchmark(config))
+        batch = asyncio.run(_run(config))
         report = build_report(config, batch)
         json_path = write_json(report, directory)
         print_summary(report)
         print(f"\nJSON: {json_path.resolve()}", flush=True)
         if config.export_to_excel:
             try:
+                if not config.no_progress:
+                    print("Saving Excel report…", file=sys.stderr, flush=True)
                 excel_path = write_excel(report, directory)
                 print(f"Excel: {excel_path.resolve()}")
             except Exception as exc:
