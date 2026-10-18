@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import json
 import math
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -48,6 +48,50 @@ class Batch:
     finished_at: str
     duration_seconds: float
     interrupted: bool = False
+
+
+@dataclass(frozen=True)
+class ProgressUpdate:
+    request_id: int
+    kind: str
+    elapsed_seconds: float
+    tool_id: str | None = None
+    tool_name: str | None = None
+    tool_status: str | None = None
+    outcome: str | None = None
+
+
+ProgressObserver = Callable[[ProgressUpdate], None]
+
+
+def _notify(observer: ProgressObserver | None, update: ProgressUpdate) -> None:
+    if observer is not None:
+        try:
+            observer(update)
+        except Exception:
+            # Optional display failures must not invalidate measurements.
+            pass
+
+
+def _notify_event(observer: ProgressObserver | None, result: RequestResult, event: Event, elapsed: float) -> None:
+    if observer is None or event.event not in {
+        "ai_message", "token_count", "start_tool_calling", "tool_calling_result",
+        "conversation_history_compaction_start", "conversation_history_compacted",
+    }:
+        return
+    data = result.raw_events[-1]["data"]
+    if not isinstance(data, dict):
+        return
+    if event.event == "ai_message" and not (data.get("content") or "").strip():
+        return
+    call_id = data.get("id") if event.event == "start_tool_calling" else data.get("tool_call_id")
+    tool_result = data.get("result")
+    _notify(observer, ProgressUpdate(
+        result.request_id, event.event, elapsed,
+        tool_id=str(call_id) if call_id is not None else None,
+        tool_name=data.get("tool_name") or data.get("name"),
+        tool_status=tool_result.get("status") if isinstance(tool_result, dict) else None,
+    ))
 
 
 class MalformedResponse(ValueError):
@@ -142,19 +186,22 @@ def _consume_event(result: RequestResult, event: Event, elapsed: float) -> bool:
 
 
 async def _request(client: httpx.AsyncClient, config: Config,
-                   result: RequestResult, barrier: asyncio.Barrier) -> None:
+                   result: RequestResult, barrier: asyncio.Barrier,
+                   on_progress: ProgressObserver | None = None) -> None:
     started = None
     try:
         await barrier.wait()
         started = perf_counter()
         result.started_at = utc_now()
         result.outcome, result.error = "incomplete", "Stream ended without ai_answer_end"
+        _notify(on_progress, ProgressUpdate(result.request_id, "started", 0))
         body: dict[str, Any] = {"ask": result.question, "stream": True}
         if config.model is not None:
             body["model"] = config.model
         async with asyncio.timeout(config.timeout):
             async with client.stream("POST", config.api_url, json=body) as response:
                 result.http_status = response.status_code
+                _notify(on_progress, ProgressUpdate(result.request_id, "connected", perf_counter() - started))
                 if not response.is_success:
                     result.outcome = "http_error"
                     result.response_body = (await response.aread()).decode("utf-8", errors="replace")
@@ -164,8 +211,11 @@ async def _request(client: httpx.AsyncClient, config: Config,
                     result.response_body = (await response.aread()).decode("utf-8", errors="replace")
                     raise MalformedResponse("Expected Content-Type text/event-stream")
                 async for event in iter_events(iter_lines(response.aiter_bytes())):
-                    if _consume_event(result, event, perf_counter() - started):
+                    elapsed = perf_counter() - started
+                    terminal = _consume_event(result, event, elapsed)
+                    if terminal:
                         return
+                    _notify_event(on_progress, result, event, elapsed)
     except asyncio.CancelledError:
         result.outcome, result.error = "cancelled", "Interrupted before completion"
     except (TimeoutError, httpx.TimeoutException):
@@ -181,9 +231,11 @@ async def _request(client: httpx.AsyncClient, config: Config,
         result.finished_at = utc_now()
         if started is not None:
             result.elapsed_seconds = perf_counter() - started
+        _notify(on_progress, ProgressUpdate(result.request_id, "finished", result.elapsed_seconds or 0,
+                                            outcome=result.outcome))
 
 
-async def run_benchmark(config: Config) -> Batch:
+async def run_benchmark(config: Config, on_progress: ProgressObserver | None = None) -> Batch:
     results = [RequestResult(i + 1, config.questions[i % len(config.questions)], config.model)
                for i in range(config.parallel)]
     headers = {"Accept": "text/event-stream"}
@@ -194,7 +246,7 @@ async def run_benchmark(config: Config) -> Batch:
                                 follow_redirects=False) as client:
         started_at, started = utc_now(), perf_counter()
         barrier = asyncio.Barrier(config.parallel)
-        tasks = [asyncio.create_task(_request(client, config, r, barrier)) for r in results]
+        tasks = [asyncio.create_task(_request(client, config, r, barrier, on_progress)) for r in results]
         group = asyncio.gather(*tasks)
         interrupted = False
         try:

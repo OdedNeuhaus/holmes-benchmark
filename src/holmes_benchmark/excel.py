@@ -1,11 +1,10 @@
-"""Readable Excel workbooks; response text is always literal, never a formula."""
+"""Simple, filterable Excel sheets with literal response text."""
 
 import math
 from pathlib import Path
 import re
 
 
-# XML 1.0 excludes these even when openpyxl's own control check allows them.
 INVALID_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 
 
@@ -22,109 +21,57 @@ def _chunks(value: str):
 
 
 def write_excel(report: dict, directory: Path) -> Path:
-    # Lazy imports let JSON survive a broken/missing optional Excel environment.
     from openpyxl import Workbook
-    from openpyxl.chart import BarChart, Reference
-    from openpyxl.formatting.rule import ColorScaleRule
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
-    from openpyxl.worksheet.table import Table, TableStyleInfo
 
-    navy, teal, pale = "17324D", "007F86", "E7F3F4"
     book = Workbook()
     summary = book.active
     summary.title = "Summary"
     results = book.create_sheet("Results")
     answers = book.create_sheet("Answers")
+    header_fill = PatternFill("solid", fgColor="24445C")
+    stripe_fill = PatternFill("solid", fgColor="F3F5F7")
 
-    def put(sheet, row, column, value):
-        if value is None:
-            value = "N/A"
-        if isinstance(value, str):
-            # Tables use short excerpts; the Answers sheet holds every chunk.
-            clean = INVALID_XML.sub("", value)
-            chunks = _chunks(clean)
-            first = next(chunks)
-            if len(first) < len(clean):
-                first = first[:1500] + "… [continued in Answers / JSON]"
-            cell = sheet.cell(row, column, first)
-            cell.data_type = "s"
-        else:
+    def append(sheet, values):
+        row = sheet.max_row + 1 if sheet.cell(1, 1).value is not None else 1
+        for column, value in enumerate(values, 1):
+            value = "N/A" if value is None else value
+            if isinstance(value, str):
+                clean = INVALID_XML.sub("", value)
+                value = next(_chunks(clean))
+                if len(value) < len(clean):
+                    value = value[:1500] + "… [full text in Answers / JSON]"
             cell = sheet.cell(row, column, value)
-        cell.alignment = Alignment(vertical="top", wrap_text=True)
-        if isinstance(value, float):
-            cell.number_format = "0.000"
-        return cell
+            if isinstance(value, str):
+                cell.data_type = "s"  # Never interpret a response as a formula.
+            cell.font = Font(name="Calibri", size=11, color="243746")
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if isinstance(value, float):
+                cell.number_format = "0.000"
+            if row > 1 and row % 2 == 0:
+                cell.fill = stripe_fill
+        return row
 
-    def table(sheet, headers, name):
-        for col, header in enumerate(headers, 1):
-            cell = put(sheet, 1, col, header)
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor=navy)
+    def format_sheet(sheet, widths, filters=False):
         sheet.freeze_panes = "A2"
-        sheet.row_dimensions[1].height = 34
-        sheet.sheet_view.showGridLines = False
-        if sheet.max_row > 1:
-            tab = Table(displayName=name, ref=f"A1:{get_column_letter(len(headers))}{sheet.max_row}")
-            tab.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
-            sheet.add_table(tab)
-            sheet.auto_filter.ref = tab.ref
+        sheet.row_dimensions[1].height = 30
+        for cell in sheet[1]:
+            cell.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+            cell.fill = header_fill
+        for column, width in enumerate(widths, 1):
+            sheet.column_dimensions[get_column_letter(column)].width = width
+        if filters:
+            # A worksheet filter is sufficient; do not also define an Excel table.
+            sheet.auto_filter.ref = sheet.dimensions
 
-    headers = ["Request", "Question", "Requested model", "Outcome", "HTTP status",
-               "First text (s)", "Completed answer (s)", "Elapsed (s)", "Tool calls", "Tool errors",
-               "Last prompt tokens", "Last output tokens", "Last total tokens", "Started (UTC)",
-               "Finished (UTC)", "Error"]
-    for row, result in enumerate(report["requests"], 2):
-        usage = result["last_reported_usage"] or {}
-
-        def token(name):
-            value = usage.get(name)
-            return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
-
-        values = [result["request_id"], result["question"], result["requested_model"] or "Server default",
-                  result["outcome"], result["http_status"], result["first_text_seconds"],
-                  result["completion_seconds"], result["elapsed_seconds"], result["tool_call_count"],
-                  result["tool_error_count"], token("prompt_tokens"), token("completion_tokens"),
-                  token("total_tokens"), result["started_at"], result["finished_at"], result["error"]]
-        for col, value in enumerate(values, 1):
-            put(results, row, col, value)
-        cell = results.cell(row, 4)
-        cell.fill = PatternFill("solid", fgColor="D9EEDC" if result["outcome"] == "success" else "FCE1DE")
-        cell.font = Font(bold=True, color="1F6335" if result["outcome"] == "success" else "9B2828")
-        results.row_dimensions[row].height = 42
-        for kind, text in (("Question", result["question"]), ("Answer", result["answer"]), ("Error", result["error"])):
-            if text is None:
-                continue
-            for part, chunk in enumerate(_chunks(text), 1):
-                target = max(2, answers.max_row + 1)
-                for col, value in enumerate((result["request_id"], kind, part, chunk), 1):
-                    put(answers, target, col, value)
-                answers.row_dimensions[target].height = 90
-
-    table(results, headers, "BenchmarkResults")
-    table(answers, ["Request", "Content", "Part", "Text"], "BenchmarkAnswers")
-    for col in range(1, len(headers) + 1):
-        results.column_dimensions[get_column_letter(col)].width = 19
-    for col, width in {"A": 11, "B": 55, "C": 25, "D": 24, "N": 29, "O": 29, "P": 55}.items():
-        results.column_dimensions[col].width = width
-    for col, width in {"A": 12, "B": 14, "C": 10, "D": 110}.items():
-        answers.column_dimensions[col].width = width
-    if results.max_row > 1:
-        results.conditional_formatting.add(f"F2:H{results.max_row}", ColorScaleRule(
-            start_type="min", start_color="DFF2EC", end_type="max", end_color="F5B7A6"))
-
-    summary.sheet_view.showGridLines = False
-    summary.freeze_panes = "A5"
-    summary.merge_cells("A1:E2")
-    title = put(summary, 1, 1, "HOLMESGPT  /  BENCHMARK REPORT")
-    title.font = Font(size=20, bold=True, color="FFFFFF")
-    title.fill = PatternFill("solid", fgColor=navy)
-    summary.merge_cells("A3:E3")
-    put(summary, 3, 1, "Concurrent conversations · Client-observed timings · Seconds")
     stats = report["summary"]
+    append(summary, ["Metric", "Value"])
     metrics = [
-        ("Total requests", stats["total_requests"]), ("Successful requests", stats["successful_requests"]),
-        ("Unsuccessful requests", stats["unsuccessful_requests"]), ("Success rate", stats["success_rate"]),
+        ("Total requests", stats["total_requests"]),
+        ("Successful requests", stats["successful_requests"]),
+        ("Unsuccessful requests", stats["unsuccessful_requests"]),
+        ("Success rate", stats["success_rate"]),
         ("Batch duration (s)", stats["batch_duration_seconds"]),
         ("Successful requests / second", stats["successful_requests_per_second"]),
         ("Completed answer sample count", stats["completion_seconds"]["count"]),
@@ -134,36 +81,53 @@ def write_excel(report: dict, directory: Path) -> Path:
         ("Requested model", report["settings"]["requested_model"] or "Server default"),
         ("Parallel requests", report["settings"]["parallel"]),
         ("Request deadline (s)", report["settings"]["timeout_seconds"]),
-        ("Started (UTC)", report["started_at"]), ("Finished (UTC)", report["finished_at"]),
+        ("Started (UTC)", report["started_at"]),
+        ("Finished (UTC)", report["finished_at"]),
         ("Interrupted", report["interrupted"]),
     ]
-    for row, (label, value) in enumerate(metrics, 5):
-        put(summary, row, 1, label).font = Font(bold=True, color=navy)
-        summary.merge_cells(start_row=row, start_column=2, end_row=row, end_column=5)
-        cell = put(summary, row, 2, value)
-        cell.fill = PatternFill("solid", fgColor=pale if row % 2 else "FFFFFF")
+    for label, value in metrics:
+        row = append(summary, [label, value])
         if label == "Success rate":
-            cell.number_format = "0.0%"
-        summary.row_dimensions[row].height = 30
-    note_row = len(metrics) + 7
-    for offset, note in enumerate(report["measurement_notes"].values()):
-        summary.merge_cells(start_row=note_row + offset, start_column=1, end_row=note_row + offset, end_column=5)
-        cell = put(summary, note_row + offset, 1, note)
-        cell.font = Font(size=10, italic=True, color=teal)
-        summary.row_dimensions[note_row + offset].height = 30
-    summary.column_dimensions["A"].width = 35
-    for col in "BCDE":
-        summary.column_dimensions[col].width = 14
-    if results.max_row > 1:
-        chart = BarChart()
-        chart.title = "Completed answer time by request"
-        chart.y_axis.title = "Seconds"
-        chart.x_axis.title = "Request ID (failed requests have no bar)"
-        chart.add_data(Reference(results, min_col=7, min_row=1, max_row=results.max_row), titles_from_data=True)
-        chart.set_categories(Reference(results, min_col=1, min_row=2, max_row=results.max_row))
-        chart.legend = None
-        chart.style, chart.width, chart.height = 10, 24, 12
-        summary.add_chart(chart, "G5")
+            summary.cell(row, 2).number_format = "0.0%"
+    for name, note in report["measurement_notes"].items():
+        row = append(summary, [name.replace("_", " ").title() + " note", note])
+        summary.row_dimensions[row].height = 42
+    format_sheet(summary, [36, 90])
+
+    append(results, ["Request", "Question", "Outcome", "First text (s)", "Completed answer (s)",
+                     "Elapsed (s)", "Tool calls", "Tool errors", "Last prompt tokens",
+                     "Last output tokens", "Last total tokens", "Requested model", "HTTP status", "Error"])
+    append(answers, ["Request", "Content", "Part", "Text"])
+    for result in report["requests"]:
+        usage = result["last_reported_usage"] or {}
+
+        def token(name):
+            value = usage.get(name)
+            try:
+                return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+            except OverflowError:
+                return None
+
+        row = append(results, [
+            result["request_id"], result["question"], result["outcome"],
+            result["first_text_seconds"], result["completion_seconds"], result["elapsed_seconds"],
+            result["tool_call_count"], result["tool_error_count"], token("prompt_tokens"),
+            token("completion_tokens"), token("total_tokens"), result["requested_model"] or "Server default",
+            result["http_status"], result["error"],
+        ])
+        results.cell(row, 3).font = Font(name="Calibri", size=11, bold=True,
+                                        color="24713C" if result["outcome"] == "success" else "A02C2C")
+        results.row_dimensions[row].height = 42
+        for kind, text in (("Question", result["question"]), ("Answer", result["answer"]), ("Error", result["error"])):
+            if text is None:
+                continue
+            for part, chunk in enumerate(_chunks(text), 1):
+                row = append(answers, [result["request_id"], kind, part, chunk])
+                lines = sum(max(1, math.ceil(len(line) / 95)) for line in chunk.split("\n"))
+                answers.row_dimensions[row].height = min(300, max(30, lines * 15))
+    format_sheet(results, [10, 48, 22, 18, 22, 18, 14, 14, 19, 19, 19, 24, 14, 48], filters=True)
+    format_sheet(answers, [10, 14, 10, 100], filters=True)
+
     destination = directory / "report.xlsx"
     temporary = directory / "report.tmp.xlsx"
     try:

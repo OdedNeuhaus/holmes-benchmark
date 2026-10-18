@@ -5,6 +5,8 @@ import signal
 import subprocess
 import sys
 import time
+import queue
+import threading
 
 import pytest
 
@@ -123,3 +125,67 @@ def test_help_is_available_without_configuration(tmp_path):
     assert "--export-to-excel" in result.stdout
     assert "HOLMES_API_URL" in result.stdout
     assert not list(tmp_path.iterdir())
+
+
+def test_live_terminal_updates_tools_and_restores_cursor(sse_server, tmp_path, monkeypatch):
+    from io import StringIO
+    from rich.console import Console
+    from holmes_benchmark import cli, progress
+
+    stream = StringIO()
+    console = Console(file=stream, force_terminal=True, width=120, height=24)
+    monkeypatch.setattr(progress, "Console", lambda **kwargs: console)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HOLMES_API_TOKEN", raising=False)
+    with sse_server({"A": (200, "text/event-stream", [
+        (0, event("start_tool_calling", {"id": "a", "tool_name": "kubectl"})),
+        (0.6, event("ai_answer_end", {"analysis": "done"})),
+    ])}) as (url, _):
+        code = cli.main(["--api-url", url, "-q", "A"])
+    output = stream.getvalue()
+    assert code == 0
+    assert "Running: kubectl" in output
+    assert "1/1 finished" in output
+    assert "\x1b[?25l" in output and "\x1b[?25h" in output
+
+
+def test_cli_shows_tool_activity_while_request_is_still_running(sse_server, tmp_path):
+    with sse_server({"A": (200, "text/event-stream", [
+        (0, event("start_tool_calling", {"id": "a", "tool_name": "kubectl"})),
+        (1.2, event("tool_calling_result", {"tool_call_id": "a", "name": "kubectl",
+                                            "result": {"status": "success"}})),
+        (0, event("ai_answer_end", {"analysis": "done"})),
+    ])}) as (url, _):
+        proc = subprocess.Popen([sys.executable, "-m", "holmes_benchmark", "--api-url", url, "-q", "A"],
+                                cwd=tmp_path, env=cli_env(), stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        lines = queue.Queue()
+
+        def read_lines():
+            for line in proc.stdout:
+                lines.put(line)
+
+        reader = threading.Thread(target=read_lines, daemon=True)
+        reader.start()
+        try:
+            seen = ""
+            deadline = time.monotonic() + 4
+            while "Tool started: kubectl" not in seen and time.monotonic() < deadline:
+                seen += lines.get(timeout=4)
+            assert "Tool started: kubectl" in seen
+            assert proc.poll() is None
+            assert proc.wait(timeout=5) == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            reader.join(timeout=2)
+            proc.stdout.close()
+
+
+def test_no_progress_preserves_results_without_activity_logs(sse_server, tmp_path):
+    with sse_server() as (url, _):
+        result = invoke(["--api-url", url, "-q", "A", "--no-progress"], tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert not result.stderr
+    assert "Success: 1/1" in result.stdout

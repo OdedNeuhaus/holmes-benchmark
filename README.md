@@ -16,6 +16,8 @@ holmes-benchmark --help
 ```
 
 You can also run `python -m holmes_benchmark` after installation.
+After updating an existing checkout, run `python -m pip install -e .` again to
+install any new dependencies, including Rich for the live terminal display.
 
 ## Quick start
 
@@ -45,6 +47,17 @@ more questions than `--parallel` is an error. There is no built-in question:
 provide at least one. Each invocation runs exactly one batch, with no warm-up,
 automatic retries, or extra health-check requests.
 
+While running, a live panel shows completed requests, elapsed time, and each
+request's current activity. Tool names appear as HolmesGPT starts and finishes
+them. "Last event" shows how long the server has been quiet. The completion bar
+counts finished requests; it doesn't guess how far through an investigation the
+model is. Up to ten requests fit in the panel, with active requests shown first.
+
+When output is redirected or the terminal doesn't support the live display,
+the CLI writes plain activity logs and a waiting update every five seconds to
+stderr. Use `--no-progress` to disable both displays and keep only the final
+summary. This also avoids progress-rendering overhead when comparing timings.
+
 ## Try it locally with a mock server
 
 From the project directory, start the standalone mock in **terminal 1**:
@@ -63,8 +76,9 @@ export HOLMES_API_URL="http://127.0.0.1:8081/api/chat"
 holmes-benchmark -p 5 -q "Check pods" -q "Check nodes" --export-to-excel
 ```
 
-The mock returns fixed answers and simulated token counts, with first text after
-about 0.2 seconds and a final answer after about 1 second. All five requests run
+The mock returns fixed answers and simulated token counts, and shows a simulated
+`kubernetes.list_pods` tool call. First text arrives after about 0.2 seconds and
+the final answer after about 1 second. All five requests run
 concurrently. Open the printed `report.xlsx` path to inspect the workbook.
 Try changing `-p` and the questions, or add `--timeout 0.5` to see timeout results.
 No real model, cluster, or API token is used. Stop the mock with Ctrl-C in terminal 1.
@@ -80,6 +94,7 @@ If port 8081 is occupied, use `--port 8082` and update `HOLMES_API_URL` accordin
 | `--model` | `HOLMES_MODEL` | Server default |
 | `--timeout` | `HOLMES_TIMEOUT` | `300` seconds per request |
 | `--export-to-excel` | — | Off |
+| `--no-progress` | — | Off; live progress is enabled |
 | — | `HOLMES_API_TOKEN` | No authentication |
 
 CLI options override their environment variables. Environment variables must be
@@ -151,14 +166,16 @@ The results directory is excluded from Git by default.
 
 The Excel workbook contains:
 
-- **Summary:** run configuration, key statistics, notes, and a timing chart.
-- **Results:** a filterable table with outcomes, timing highlights, tool counts,
-  last reported tokens, and errors. Failed requests have no timing-chart bar.
+- **Summary:** a simple two-column list of run configuration, statistics, and notes.
+- **Results:** filterable rows with outcomes, timings, tool counts,
+  last reported tokens, and errors.
 - **Answers:** questions, final answers, and errors. Long text continues in
   numbered parts; full details are also available in JSON. Partial assistant
   text from interrupted requests remains in the JSON events.
 
-Headers are frozen, outcomes are color coded, and response text is written as
+Sheets use restrained headers and alternating row shading, without charts,
+merged cells, or structured Excel table objects. Headers are frozen, outcomes
+are color coded, and response text is written as
 literal strings rather than spreadsheet formulas. Excel-incompatible characters
 are removed from the workbook only. JSON retains them. Excel generation happens
 after JSON saving; an export failure leaves the JSON available.
@@ -190,7 +207,8 @@ python -m pip wheel --no-deps --no-build-isolation . -w dist
 Tests use local HTTP streaming servers rather than a real HolmesGPT deployment.
 They cover concurrent dispatch, deterministic rotation, fragmented UTF-8/SSE,
 timing, total deadlines, failure isolation, SIGINT partial output, credential
-redaction, CLI exit codes, and reopening generated Excel workbooks.
+redaction, live tool activity, plain progress logs, CLI exit codes, and reopening
+generated Excel workbooks with checks on their underlying XML structure.
 
 To check your deployment, first run one representative question with `-p 1`,
 inspect its answer and events, then increase parallelism with the same workload.

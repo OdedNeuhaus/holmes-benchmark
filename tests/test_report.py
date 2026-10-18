@@ -70,7 +70,7 @@ def test_json_preserves_details_and_redacts_credential_everywhere(tmp_path):
     assert secret in batch.requests[0].answer  # Export sanitization does not mutate measurements.
 
 
-def test_excel_structure_chart_literal_text_and_long_answer_chunks(tmp_path):
+def test_excel_simple_filters_literal_text_and_long_answer_chunks(tmp_path):
     from holmes_benchmark.report import build_report, write_excel
 
     batch = sample_batch()
@@ -83,15 +83,18 @@ def test_excel_structure_chart_literal_text_and_long_answer_chunks(tmp_path):
     book = load_workbook(path)
     assert book.sheetnames == ["Summary", "Results", "Answers"]
     summary, results, answers = (book[name] for name in book.sheetnames)
-    assert summary._charts
+    assert not summary._charts
+    assert all(not sheet.merged_cells.ranges for sheet in book)
     assert results.freeze_panes == "A2"
-    assert results.tables and answers.tables
+    assert not results.tables and not answers.tables
+    assert results.auto_filter.ref == results.dimensions
+    assert answers.auto_filter.ref == answers.dimensions
     headers = {cell.value: cell.column for cell in results[1]}
     q = results.cell(2, headers["Question"])
     assert q.value.startswith("=HYPERLINK") and q.data_type == "s"
     assert results.cell(2, headers["Last total tokens"]).value == 16
     assert results.cell(3, headers["Last total tokens"]).value == "N/A"
-    assert results.conditional_formatting
+    assert not results.conditional_formatting
     chunks = [row[3].value for row in answers.iter_rows(min_row=2)
               if row[0].value == 1 and row[1].value == "Answer"]
     assert len(chunks) > 1
@@ -101,6 +104,16 @@ def test_excel_structure_chart_literal_text_and_long_answer_chunks(tmp_path):
     book.close()
     with ZipFile(path) as archive:
         assert b"<f>" not in archive.read("xl/worksheets/sheet2.xml")
+        # Keep one standard worksheet filter; no table/drawing relationships
+        # for Excel to repair or graphics to distort the layout.
+        assert not any(name.startswith(("xl/tables/", "xl/charts/", "xl/drawings/"))
+                       for name in archive.namelist())
+        import xml.etree.ElementTree as ET
+        ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        for name in ("xl/worksheets/sheet2.xml", "xl/worksheets/sheet3.xml"):
+            root = ET.fromstring(archive.read(name))
+            assert len(root.findall("m:autoFilter", ns)) == 1
+            assert root.find("m:tableParts", ns) is None
 
 
 def test_excel_all_failed_still_writes_usable_report(tmp_path):

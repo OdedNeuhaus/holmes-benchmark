@@ -36,6 +36,14 @@ def test_defaults_and_optional_authentication(monkeypatch):
     assert not config.export_to_excel
 
 
+def test_progress_can_be_disabled(monkeypatch):
+    from holmes_benchmark.config import parse_config
+
+    monkeypatch.setenv("HOLMES_API_URL", "http://localhost:8080/api/chat")
+    assert not parse_config(["-q", "A"]).no_progress
+    assert parse_config(["-q", "A", "--no-progress"]).no_progress
+
+
 @pytest.mark.parametrize("args", [
     [], ["-q", ""], ["-q", "   "], ["-q", "A", "-q", "B"],
     ["-q", "A", "-p", "0"], ["-q", "A", "-p", "-1"],
