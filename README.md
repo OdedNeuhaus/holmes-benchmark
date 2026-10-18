@@ -27,6 +27,7 @@ export HOLMES_API_TOKEN="your-token"  # Omit if your server doesn't require auth
 
 holmes-benchmark --parallel 5 \
   --question "Why is my pod restarting?" \
+  --show-summary \
   --export-to-excel
 ```
 
@@ -55,8 +56,22 @@ model is. Up to ten requests fit in the panel, with active requests shown first.
 
 When output is redirected or the terminal doesn't support the live display,
 the CLI writes plain activity logs and a waiting update every five seconds to
-stderr. Use `--no-progress` to disable both displays and keep only the final
-summary. This also avoids progress-rendering overhead when comparing timings.
+stderr. Use `--no-progress` to disable both progress displays. This also avoids
+progress-rendering overhead when comparing timings.
+
+Each run opens with a separated **HolmesGPT Benchmarking** banner. A brief success
+summary and output paths always appear at the end. Add `--show-summary` for a
+readable per-request table with first-text, answer and elapsed times, tool/error
+counts, and last reported input/output/total tokens, followed by numbered questions.
+This works independently of Excel export, including with `--no-progress`:
+
+```bash
+holmes-benchmark -p 3 -q "Check pods" --show-summary
+```
+
+Missing token counts stay `N/A`; displayed tokens are the server's last usage
+snapshot, not investigation totals. Failed requests stay visible even without
+`--show-summary`.
 
 ## Try it locally with a mock server
 
@@ -73,7 +88,7 @@ source .venv/bin/activate
 unset HOLMES_API_TOKEN HOLMES_MODEL HOLMES_TIMEOUT
 export HOLMES_API_URL="http://127.0.0.1:8081/api/chat"
 
-holmes-benchmark -p 5 -q "Check pods" -q "Check nodes" --export-to-excel
+holmes-benchmark -p 5 -q "Check pods" -q "Check nodes" --show-summary --export-to-excel
 ```
 
 The mock returns fixed answers and simulated token counts, and shows a simulated
@@ -95,6 +110,7 @@ If port 8081 is occupied, use `--port 8082` and update `HOLMES_API_URL` accordin
 | `--timeout` | `HOLMES_TIMEOUT` | `300` seconds per request |
 | `--export-to-excel` | — | Off |
 | `--no-progress` | — | Off; live progress is enabled |
+| `--show-summary` | — | Off; show the detailed terminal results table |
 | — | `HOLMES_API_TOKEN` | No authentication |
 
 CLI options override their environment variables. Environment variables must be
@@ -166,16 +182,19 @@ The results directory is excluded from Git by default.
 
 The Excel workbook contains:
 
-- **Summary:** a simple two-column list of run configuration, statistics, and notes.
+- **Summary:** clearly separated performance, run settings, and measurement notes.
 - **Results:** filterable rows with outcomes, timings, tool counts,
   last reported tokens, and errors.
 - **Answers:** questions, final answers, and errors. Long text continues in
-  numbered parts; full details are also available in JSON. Partial assistant
+  short, numbered reading sections with wrapped text and rows sized to fit;
+  full details are also available in JSON. Partial assistant
   text from interrupted requests remains in the JSON events.
 
-Sheets use restrained headers and alternating row shading, without charts,
-merged cells, or structured Excel table objects. Headers are frozen, outcomes
-are color coded, and response text is written as
+Sheets use Aptos fonts, navy/teal headers, alternating row shading, highlighted
+answer times, and colored outcome cells. Gridlines are hidden and headers frozen.
+Long questions and errors have concise previews in Results and full text in Answers.
+The workbook keeps ordinary worksheet filters, without charts, merged cells,
+or structured Excel table objects. Response text is written as
 literal strings rather than spreadsheet formulas. Excel-incompatible characters
 are removed from the workbook only. JSON retains them. Excel generation happens
 after JSON saving; an export failure leaves the JSON available.

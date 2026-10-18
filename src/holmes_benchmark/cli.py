@@ -8,6 +8,10 @@ import sys
 from tempfile import TemporaryFile
 from uuid import uuid4
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+
 from .config import parse_config
 from .report import build_report, print_summary, redact, terminal_text, write_excel, write_json
 from .runner import run_benchmark
@@ -49,13 +53,22 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         error(f"Cannot prepare output directory: {exc}")
         return 1
+    console = Console()
+    console.print()
+    console.print(Panel(
+        Text.assemble(("Holmes", "bold bright_white"), ("GPT", "bold cyan"),
+                      (" Benchmarking", "bold bright_white"),
+                      ("\nASK  /  OBSERVE  /  MEASURE", "dim")),
+        border_style="cyan", padding=(1, 3), expand=False,
+    ))
+    console.print()
     print(f"Running {config.parallel} concurrent request(s), "
           f"{len(config.questions)} question(s), {config.timeout:g}s deadline each…", flush=True)
     try:
         batch = asyncio.run(_run(config))
         report = build_report(config, batch)
         json_path = write_json(report, directory)
-        print_summary(report)
+        print_summary(report, show_details=config.show_summary, console=console)
         print(f"\nJSON: {json_path.resolve()}", flush=True)
         if config.export_to_excel:
             try:

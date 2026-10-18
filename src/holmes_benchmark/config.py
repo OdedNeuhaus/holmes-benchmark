@@ -17,6 +17,7 @@ class Config:
     token: str | None = field(default=None, repr=False)
     export_to_excel: bool = False
     no_progress: bool = False
+    show_summary: bool = False
 
 
 def parse_config(argv: list[str] | None = None) -> Config:
@@ -39,6 +40,8 @@ def parse_config(argv: list[str] | None = None) -> Config:
                         help="also save a formatted report.xlsx")
     parser.add_argument("--no-progress", action="store_true",
                         help="disable live request activity and progress logs")
+    parser.add_argument("--show-summary", action="store_true",
+                        help="show a per-request results table with timings, tools, and last reported tokens")
     args = parser.parse_args(argv)
     if args.parallel < 1:
         parser.error("--parallel must be a positive integer")
@@ -69,4 +72,5 @@ def parse_config(argv: list[str] | None = None) -> Config:
         parser.error("HOLMES_API_TOKEN must contain only visible ASCII characters, without spaces")
     return Config(api_url=url, questions=tuple(args.question), parallel=args.parallel,
                   timeout=timeout, model=args.model, token=token,
-                  export_to_excel=args.export_to_excel, no_progress=args.no_progress)
+                  export_to_excel=args.export_to_excel, no_progress=args.no_progress,
+                  show_summary=args.show_summary)

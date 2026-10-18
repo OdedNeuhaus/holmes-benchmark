@@ -49,6 +49,28 @@ def test_no_success_is_na_not_zero(capsys):
     assert "Timed out" in output
 
 
+def test_terminal_summary_shows_usage_snapshot_and_handles_invalid_metrics():
+    from io import StringIO
+    from rich.console import Console
+    from holmes_benchmark.report import build_report, print_summary
+
+    batch = sample_batch()
+    batch.requests[0].question = "Check [bold]pods\x1b[2J secret"
+    batch.requests[0].last_reported_usage = {"prompt_tokens": 0, "completion_tokens": 9, "total_tokens": 9}
+    batch.requests[1].last_reported_usage = {"prompt_tokens": True, "completion_tokens": -2, "total_tokens": "secret"}
+    report = build_report(Config("http://host/api/chat", ("A",), token="secret"), batch)
+    stream = StringIO()
+    print_summary(report, console=Console(file=stream, width=100, force_terminal=False))
+    output = stream.getvalue()
+    assert "0 / 9 / 9" in output
+    assert "N/A / N/A / N/A" in output
+    assert "timeout" in output and "10.000" in output
+    assert "not investigation totals" in output
+    assert "secret" not in output and "\x1b" not in output
+    assert "[bold]pods" in output and "[REDACTED]" in output
+    assert "Success: 2/3" in output and "Completed answers (n=2)" in output
+
+
 def test_json_preserves_details_and_redacts_credential_everywhere(tmp_path):
     from holmes_benchmark.report import build_report, write_json
 
@@ -125,6 +147,32 @@ def test_excel_all_failed_still_writes_usable_report(tmp_path):
     book = load_workbook(tmp_path / "report.xlsx")
     assert book["Results"].max_row == 2
     assert "N/A" in [cell.value for row in book["Summary"] for cell in row]
+    book.close()
+
+
+def test_excel_long_answers_use_readable_rows_and_preserve_newlines(tmp_path):
+    from holmes_benchmark.report import build_report, write_excel
+
+    batch = sample_batch()
+    answer = "Overview\n" + "A long explanation of the pod status. " * 200 + "\n" * 40 + "Final note."
+    batch.requests[0].answer = answer
+    batch.requests[0].question = "Why are these pods restarting? " * 40
+    write_excel(build_report(Config("http://host/api/chat", ("A",)), batch), tmp_path)
+    book = load_workbook(tmp_path / "report.xlsx")
+    sheet = book["Answers"]
+    records = [row for row in sheet.iter_rows(min_row=2)
+               if row[0].value == 1 and row[1].value == "Answer"]
+    assert len(records) > 5  # Reading chunks, not a single oversized hidden cell.
+    assert "".join(row[3].value or "" for row in records) == answer
+    assert [row[2].value for row in records] == list(range(1, len(records) + 1))
+    for row in records:
+        cell = row[3]
+        assert cell.alignment.wrap_text
+        assert cell.value.count("\n") <= 12
+        assert len(cell.value) <= 1200
+        assert 30 <= sheet.row_dimensions[cell.row].height <= 300
+    assert len(book["Results"]["B2"].value) < 250
+    assert "Answers" in book["Results"]["B2"].value
     book.close()
 
 

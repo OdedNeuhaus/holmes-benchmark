@@ -127,6 +127,32 @@ def test_help_is_available_without_configuration(tmp_path):
     assert not list(tmp_path.iterdir())
 
 
+def test_show_summary_includes_request_tokens_without_excel(sse_server, tmp_path):
+    with sse_server({"A": (200, "text/event-stream", [
+        (0, event("ai_answer_end", {"analysis": "done", "metadata": {"usage": {
+            "prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168,
+        }}})),
+    ])}) as (url, _):
+        process = invoke(["--api-url", url, "-q", "A", "--show-summary", "--no-progress"], tmp_path)
+    assert process.returncode == 0, process.stderr
+    assert process.stdout.startswith("\n")
+    assert "HolmesGPT" in process.stdout and "Benchmarking" in process.stdout
+    assert "Benchmark results" in process.stdout
+    assert "123 / 45 / 168" in process.stdout
+    assert "Last reported" in process.stdout and "not investigation totals" in process.stdout
+    assert "Success: 1/1" in process.stdout
+    assert "\x1b" not in process.stdout
+    assert not list(tmp_path.glob("results/*/*.xlsx"))
+
+
+def test_default_output_stays_brief(sse_server, tmp_path):
+    with sse_server() as (url, _):
+        process = invoke(["--api-url", url, "-q", "A", "--no-progress"], tmp_path)
+    assert process.returncode == 0
+    assert "Success: 1/1" in process.stdout
+    assert "Benchmark results" not in process.stdout
+
+
 def test_live_terminal_updates_tools_and_restores_cursor(sse_server, tmp_path, monkeypatch):
     from io import StringIO
     from rich.console import Console
