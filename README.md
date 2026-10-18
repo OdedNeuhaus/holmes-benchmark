@@ -228,6 +228,73 @@ network errors, and streams ending without a final answer are unsuccessful.
 `approval_required` is an incomplete result, not an approval request made by this
 tool. Other requests continue when one fails.
 
+## Create graphs from your Excel reports
+
+The separate script reads a folder of benchmark workbooks, including subfolders.
+It needs only the `.xlsx` files; it does not call HolmesGPT or require their JSON
+files. Install the plotting dependency once:
+
+```bash
+source .venv/bin/activate
+python -m pip install -e '.[charts]'
+python scripts/plot_benchmarks.py ./results
+```
+
+For another input folder and output location:
+
+```bash
+python scripts/plot_benchmarks.py /path/to/workbooks --output-dir ./charts
+```
+
+Each invocation creates a new UTC+3 timestamped directory, under `INPUT/graphs`
+by default. Existing reports and graphs are preserved. Open **overview.png**
+first; it combines these four charts:
+
+| Graph | What it shows |
+|---|---|
+| `answer_latency` | Average and p95 completed-answer time versus parallel requests |
+| `first_text_latency` | Average time until the first assistant text versus parallel requests |
+| `throughput` | Successful answers per second versus parallel requests |
+| `success_rate` | Successful requests as a percentage of all requests versus parallel requests |
+
+Every chart, including the overview, is saved as a high-resolution **PNG** and
+an editable, scalable **SVG**. `metrics.csv` contains the exact plotted values,
+run/request/sample counts, and failures. `sources.json` lists included files,
+duplicates, skipped files, and calculation methods.
+
+The script combines **all files in the supplied folder** by parallelism. It does
+not infer before/after labels, model versions, or a baseline. To compare an
+upgrade, run it separately on each collection and compare the graphs or CSVs.
+Use the same questions, timeout, model settings, and parallelism levels for a
+useful comparison; changes in these inputs can also affect the results. The
+script notes mixed requested models/question sets but still pools the files.
+
+Averages are calculated from individual **successful requests**, not by averaging
+the workbook averages. P95 uses nearest rank across those same requests; with
+small samples it often equals the maximum. First-text latency uses available
+measurements from successful requests and is not first-token latency. Sample
+counts appear on small charts and are always available in the CSV. Missing
+measurements stay blank in CSV and are not plotted as zero.
+
+Throughput is `total successes / sum of batch durations` at each parallelism.
+Success rate includes failed and cancelled requests. A latency improvement with
+a worse success rate is not necessarily an improvement overall. These graphs
+describe performance, not answer quality or statistical significance.
+
+Both old and current workbook layouts are supported. Duplicate exports with the
+same run timestamp and normalized measurements are counted once; without a valid
+timestamp, only byte-identical copies are deduplicated. Excel lock/temp files are
+ignored. Invalid workbooks are reported and skipped; valid files still produce
+graphs, with exit code `1` to signal incomplete input. Exit code `0` means all
+eligible files were processed, and `2` means invalid arguments. A folder with no
+valid reports returns `1` without creating output.
+
+To see a scaling curve, include runs with several `--parallel` values, such as
+`1`, `3`, `5`, and `10`. With only one value, the graphs correctly show one point.
+
+The script can also be copied and used independently with Python 3.11+ and
+`python -m pip install openpyxl matplotlib`.
+
 ## Development and verification
 
 ```bash
